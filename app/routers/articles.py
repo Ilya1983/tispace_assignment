@@ -6,7 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import Article
-from app.schemas import ArticleDetail, ArticleListItem, PaginatedResponse
+from app.schemas import ArticleDetail, ArticleListItem, FetchResult, PaginatedResponse
+from app.services.fetcher import fetch_and_store_articles
 
 router = APIRouter(prefix="/articles", tags=["articles"])
 
@@ -41,6 +42,14 @@ async def list_articles(
         page_size=page_size,
         results=[ArticleListItem.model_validate(r) for r in rows],
     )
+
+
+@router.post("/fetch", response_model=FetchResult)
+async def trigger_fetch(
+    keyword: str = Query("markets"),
+    db: AsyncSession = Depends(get_db),
+):
+    return await fetch_and_store_articles(keyword, db)
 
 
 @router.get("/{article_id}", response_model=ArticleDetail)
