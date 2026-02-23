@@ -4,10 +4,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import redis.asyncio as redis
+
 from app.database import get_db
 from app.models import Article
-from app.schemas import ArticleDetail, ArticleListItem, FetchResult, PaginatedResponse
+from app.redis import get_redis
+from app.schemas import ArticleDetail, ArticleListItem, ArticleSummary, FetchResult, PaginatedResponse
+from app.services.cache import cache_summary, get_cached_summary
 from app.services.fetcher import fetch_and_store_articles
+from app.services.summarizer import summarize_article
 
 router = APIRouter(prefix="/articles", tags=["articles"])
 
@@ -64,8 +69,12 @@ async def get_article(article_id: UUID, db: AsyncSession = Depends(get_db)):
     return ArticleDetail.model_validate(article)
 
 
-@router.get("/{article_id}/summary")
-async def get_summary(article_id: UUID, db: AsyncSession = Depends(get_db)):
+@router.get("/{article_id}/summary", response_model=ArticleSummary)
+async def get_summary(
+    article_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    r: redis.Redis = Depends(get_redis),
+):
     article = (
         await db.execute(select(Article).where(Article.id == article_id))
     ).scalar_one_or_none()
@@ -73,4 +82,14 @@ async def get_summary(article_id: UUID, db: AsyncSession = Depends(get_db)):
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
 
-    raise HTTPException(status_code=501, detail="Summary endpoint not yet implemented")
+    if not article.content:
+        raise HTTPException(status_code=422, detail="Article has no content to summarize")
+
+    cached = await get_cached_summary(article_id, r)
+    if cached:
+        return ArticleSummary(id=article.id, title=article.title, summary=cached, cached=True)
+
+    summary = await summarize_article(article.content)
+    await cache_summary(article_id, summary, r)
+
+    return ArticleSummary(id=article.id, title=article.title, summary=summary, cached=False)
